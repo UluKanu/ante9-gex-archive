@@ -1,0 +1,49 @@
+name: Heartbeat
+
+# WHY THIS EXISTS
+#
+# GitHub disables scheduled workflows in a repository after 60 days with no
+# repository ACTIVITY. Workflow runs do not count — only commits do. A repo whose
+# only job is to run a cron therefore has no reason to ever be touched, and quietly
+# kills its own schedule after two months.
+#
+# This is not hypothetical. pini-bot's last commit was 2026-06-15, its schedule was
+# disabled on 2026-08-14 (exactly 60 days later), and the levels CSV it serves went
+# stale for 17 days while still returning HTTP 200 with a valid-looking file. Nothing
+# alerted anyone. The failure mode is silent by construction.
+#
+# So: commit something small once a month, well inside the window, and re-assert the
+# archive workflow's enabled state on the way past in case it slipped anyway.
+
+on:
+  schedule:
+    - cron: '17 6 1 * *'   # 06:17 UTC on the 1st of each month
+  workflow_dispatch:
+
+permissions:
+  contents: write   # to push the heartbeat commit
+  actions: write    # to re-enable the archive workflow if it was disabled
+
+jobs:
+  beat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Touch the heartbeat file and commit
+        run: |
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > .heartbeat
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .heartbeat
+          git commit -m "heartbeat: keep the schedule alive (see heartbeat.yml)" || exit 0
+          git push
+
+      - name: Re-assert the archive schedule
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api -X PUT \
+            "repos/${{ github.repository }}/actions/workflows/archive.yml/enable" \
+            && echo "archive.yml enabled" \
+            || echo "enable call failed (already active is fine)"

@@ -199,3 +199,22 @@ filterable out later.
 - **No holiday calendar.** The cron fires on market holidays and archives a stale
   chain. Cheap to filter out later by the `0DTE`/`7DTE-ALL` tag; not worth a dependency
   now.
+
+## The 60-day trap
+
+GitHub disables a repository's scheduled workflows after **60 days with no repository
+activity**. Workflow runs do not count as activity — only commits do. A repo that
+exists purely to run a cron therefore has no reason to ever be touched, and silently
+kills its own schedule after two months.
+
+This already happened to pini-bot: last commit 2026-06-15, schedule disabled
+2026-08-14, and the levels CSV it serves went stale for 17 days while still returning
+HTTP 200 with a valid-looking file. Nothing alerted anyone.
+
+`.github/workflows/heartbeat.yml` commits a timestamp to `.heartbeat` on the 1st of
+each month and re-asserts `archive.yml`'s enabled state on the way past. If you ever
+see the archive stop, check the workflow's `state` before debugging anything else:
+
+```
+gh api repos/UluKanu/ante9-gex-archive/actions/workflows | grep state
+```
