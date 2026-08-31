@@ -1,0 +1,45 @@
+name: Archive SPX gamma structure
+
+on:
+  schedule:
+    # Every 5 minutes, 13:00-21:59 UTC, Mon-Fri.
+    # Covers the RTH cash session under both EDT (13:30-20:00 UTC) and EST
+    # (14:30-21:00 UTC) without needing a seasonal edit.
+    # GitHub's scheduler is best-effort and drifts under load, which is why every
+    # row carries the ACTUAL fetch time rather than the scheduled one.
+    - cron: '*/5 13-21 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      bookmap:
+        description: 'Also write basis-adjusted ES/MES cloud-notes CSVs'
+        type: boolean
+        default: true
+
+concurrency:
+  # Never let a slow run and its successor append to the same daily CSV at once.
+  group: gex-archive
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Snapshot and archive
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          BM_ES: ${{ vars.BM_ES || 'ESU6.CME@BMD' }}
+          BM_MES: ${{ vars.BM_MES || 'MESU6.CME@BMD' }}
+        run: python fetch_gex.py --symbol SPX --bookmap
