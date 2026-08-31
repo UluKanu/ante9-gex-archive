@@ -1,29 +1,37 @@
 name: Archive SPX gamma structure
 
+# WHY THIS LOOPS INSTEAD OF USING A */5 CRON
+#
+# GitHub deprioritises high-frequency schedules on free runners and silently drops them. Measured, not
+# assumed: pini-bot's `*/5 * * * *` produced 1,283 runs in ~94 days — about 13.6/day against an expected
+# 288 — for its entire life. This repo's own `*/5 13-21` produced ZERO scheduled runs in its first
+# session. Asking the scheduler 108 times a day and getting 13 is not a cadence, it is a lottery.
+#
+# So we ask for ONE trigger per window and keep our own clock inside the job. The script sleeps to each
+# interval boundary and snapshots on its own schedule, which also means a late-firing trigger
+# self-corrects instead of skewing the whole session.
+
 on:
   schedule:
-    # Every 5 minutes, 13:00-21:59 UTC, Mon-Fri.
-    # Covers the RTH cash session under both EDT (13:30-20:00 UTC) and EST
-    # (14:30-21:00 UTC) without needing a seasonal edit.
-    # GitHub's scheduler is best-effort and drifts under load, which is why every
-    # row carries the ACTUAL fetch time rather than the scheduled one.
-    - cron: '*/5 13-21 * * 1-5'
+    - cron: '20 13 * * 1-5'   # main window, opens before RTH under EDT (13:30 UTC)
+    - cron: '0 15 * * 1-5'    # backup, in case the 13:20 trigger is dropped
+    - cron: '0 19 * * 1-5'    # late window, covers the EST tail (RTH ends 21:00 UTC in winter)
   workflow_dispatch:
     inputs:
-      bookmap:
-        description: 'Also write basis-adjusted ES/MES cloud-notes CSVs'
-        type: boolean
-        default: true
+      until:
+        description: 'Loop until this UTC HH:MM (blank = single snapshot)'
+        type: string
+        default: ''
 
 concurrency:
-  # Never let a slow run and its successor append to the same daily CSV at once.
+  # A queued backup will find its window already closed and exit immediately — see _parse_until.
   group: gex-archive
   cancel-in-progress: false
 
 jobs:
   snapshot:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 350        # under GitHub's 6h job ceiling; the longest window is 13:20->18:58
     steps:
       - uses: actions/checkout@v4
 
@@ -34,6 +42,15 @@ jobs:
 
       - run: pip install -r requirements.txt
 
+      - name: Pick the window
+        run: |
+          case "${{ github.event.schedule }}" in
+            "20 13 * * 1-5") echo "UNTIL=18:58" >> "$GITHUB_ENV" ;;
+            "0 15 * * 1-5")  echo "UNTIL=18:58" >> "$GITHUB_ENV" ;;
+            "0 19 * * 1-5")  echo "UNTIL=21:05" >> "$GITHUB_ENV" ;;
+            *)               echo "UNTIL=${{ inputs.until }}" >> "$GITHUB_ENV" ;;
+          esac
+
       - name: Snapshot and archive
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
@@ -42,4 +59,9 @@ jobs:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
           BM_ES: ${{ vars.BM_ES || 'ESU6.CME@BMD' }}
           BM_MES: ${{ vars.BM_MES || 'MESU6.CME@BMD' }}
-        run: python fetch_gex.py --symbol SPX --bookmap
+        run: |
+          if [ -n "$UNTIL" ]; then
+            python fetch_gex.py --symbol SPX --bookmap --interval 300 --until "$UNTIL"
+          else
+            python fetch_gex.py --symbol SPX --bookmap
+          fi

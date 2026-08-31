@@ -36,6 +36,7 @@ import json
 import os
 import re
 import sys
+import time
 from collections import defaultdict
 from typing import Any
 
@@ -360,6 +361,16 @@ def session_date_for(now_utc: dt.datetime) -> dt.date:
         return (now_utc - dt.timedelta(hours=5)).date()
 
 
+def _parse_until(hhmm: str, now: dt.datetime) -> dt.datetime:
+    """Resolve HH:MM (UTC) against today. Deliberately does NOT roll to tomorrow.
+
+    A window whose end has already passed must end the run immediately, not run for 22 hours. That
+    matters because a BACKUP trigger can be queued behind the primary run by the concurrency group and
+    start after its own window closed — rolling forward would turn a safety net into an overnight job."""
+    hh, mm = (int(x) for x in hhmm.split(":"))
+    return now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Snapshot SPX gamma structure to R2 (t-0352).")
     ap.add_argument("--symbol", default="SPX", help="Cboe index symbol (default: SPX)")
@@ -370,7 +381,45 @@ def main() -> int:
     ap.add_argument("--bookmap", action="store_true", help="also write basis-adjusted ES/MES cloud-notes CSVs")
     ap.add_argument("--dry-run", action="store_true", help="fetch and derive, write nothing")
     ap.add_argument("--out-dir", help="write to this local directory instead of R2 (offline test)")
+    ap.add_argument("--until", help="loop until this UTC wall-clock time (HH:MM), snapshotting every --interval")
+    ap.add_argument("--interval", type=int, default=300, help="seconds between snapshots when looping (default 300)")
     args = ap.parse_args()
+
+    if not args.until:
+        return snapshot_once(args)
+
+    # LOOP MODE — see README, "Why this loops instead of a */5 cron".
+    # GitHub deprioritises high-frequency schedules on free runners and silently drops them. pini-bot's
+    # */5 cron delivered ~13.6 runs/day against an expected 288 for its entire life, and this repo's own
+    # */5 produced ZERO scheduled runs in its first session. A low-frequency trigger is far likelier to
+    # fire, so we ask the scheduler for ONE run per window and keep our own clock inside it.
+    now = dt.datetime.now(dt.timezone.utc)
+    end = _parse_until(args.until, now)
+    if end <= now:
+        print(f"window already closed ({end.isoformat()} <= {now.isoformat()}) — nothing to do")
+        return 0
+    print(f"LOOP until {end.isoformat()} every {args.interval}s (now {now.isoformat()})")
+    taken = archived = 0
+    while True:
+        now = dt.datetime.now(dt.timezone.utc)
+        # Align to the next interval boundary, so snapshot times land on a clean grid across runs and a
+        # late-firing trigger self-corrects instead of offsetting the whole session.
+        wait = args.interval - (now.timestamp() % args.interval)
+        if now + dt.timedelta(seconds=wait) >= end:
+            break
+        time.sleep(wait)
+        taken += 1
+        try:
+            if snapshot_once(args) == 0:
+                archived += 1
+        except Exception as exc:  # noqa: BLE001 — one bad fetch must never end the session's collection
+            print(f"  snapshot FAILED ({exc.__class__.__name__}: {exc}) — continuing")
+    print(f"LOOP done — {archived}/{taken} snapshots archived")
+    return 0 if archived else 1
+
+
+def snapshot_once(args) -> int:
+    """One fetch → derive → write cycle. 0 on success, 1 when there was nothing to archive."""
 
     payload, fetched_at = fetch_chain(args.symbol)
     source_ts = payload.get("timestamp", "")

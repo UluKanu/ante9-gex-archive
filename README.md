@@ -128,19 +128,44 @@ types so a `CallWall` at 0.87 and a `GammaWall` at 0.29 are actually comparable.
 This is the t-0314 standing check applied to a new indicator: say what is measured,
 say what is assumed, and emit nothing rather than something confidently wrong.
 
-## Cadence and clock discipline
+## Cadence — why this loops instead of using a `*/5` cron
 
-`*/5 13-21 * * 1-5` UTC — every 5 minutes, covering RTH under both EDT (13:30–20:00
-UTC) and EST (14:30–21:00 UTC) with no seasonal edit.
+The obvious design is `*/5 13-21 * * 1-5` and a one-shot script. That was the first design, and it
+does not work.
 
-**GitHub's scheduler is best-effort and drifts 5–15 minutes under load.** That is fine
-for an archive and fatal for anything sub-minute. It is also exactly why every row
-carries the **actual fetch time**, never the scheduled time. An SI event at 14:35:12 in
-a Bookmap recording gets matched to the snapshot whose `SnapshotUTC` actually says
-14:35:02 — not to the run that was *supposed* to fire at 14:35:00 and fired at 14:41.
+**GitHub deprioritises high-frequency schedules on free runners and silently drops them.** Measured,
+not assumed:
 
-`concurrency: gex-archive` prevents a slow run and its successor from appending to the
-same daily CSV at once.
+| | expected | actual |
+|---|---|---|
+| pini-bot, `*/5 * * * *`, ~94 days | 288/day | **~13.6/day** (1,283 runs total) |
+| this repo, `*/5 13-21`, first session | ~108 | **0 scheduled runs** |
+
+Asking the scheduler 108 times a day and receiving 13 is not a cadence, it is a lottery — and it
+quietly guts the whole premise, since hourly resolution cannot show an intraday *build*.
+
+So the job asks the scheduler for **one trigger per window** and keeps its own clock inside:
+
+```
+20 13 * * 1-5   →  --until 18:58    main window (RTH opens 13:30 UTC under EDT)
+ 0 15 * * 1-5   →  --until 18:58    backup, if the 13:20 trigger is dropped
+ 0 19 * * 1-5   →  --until 21:05    late window (RTH ends 21:00 UTC under EST)
+```
+
+Each run sleeps to the next 5-minute boundary, snapshots, repeats. Three low-frequency triggers are
+far likelier to fire than 108 high-frequency ones, and any two of them still cover the session.
+
+`_parse_until` deliberately **does not roll a passed time to tomorrow**: a backup trigger queued behind
+the primary run by the `concurrency` group would otherwise turn a safety net into a 22-hour job. A
+window whose end has passed exits immediately.
+
+A snapshot that throws is caught and logged; the loop continues. One bad fetch must never cost the rest
+of the session.
+
+**Clock discipline.** Every row carries the **actual fetch time**, never the scheduled one, and the loop
+aligns to interval boundaries so a late-firing trigger self-corrects instead of skewing the whole day.
+An SI event at 14:35:12 in a Bookmap recording is matched to the snapshot whose `SnapshotUTC` really
+says 14:35:02.
 
 ## Setup
 
