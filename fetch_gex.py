@@ -337,13 +337,20 @@ def futures_basis(spot: float) -> dict[str, float] | None:
     return {"ES": es - spot, "MES": es - spot}
 
 
-def bookmap_csv(bm_symbol: str, levels: list[dict[str, Any]], basis: float) -> bytes:
+def bookmap_csv(bm_symbol: str, levels: list[dict[str, Any]], basis: float, expiration: str) -> bytes:
+    """Chart-ready rows. The note names the EXPIRATION as well as the type and strength.
+
+    Without it the chart says "PutWall 1.00" and gives the trader no way to know which expiry it came
+    from. That matters more here than it looks: a stale 0DTE level does not merely describe old data, it
+    describes open interest in contracts that CEASED TO EXIST at the previous close. A day-old prior-day
+    high is still a real price; a day-old 0DTE wall is a deleted book. Naming the expiry on the line is
+    the cheapest half of making that visible."""
     buf = io.StringIO()
     w = csv.writer(buf, lineterminator="\n")
     w.writerow(BM_HEADER)
     for lv in levels:
         fg, bg = LEVEL_COLORS.get(lv["type"], ("#FFFFFF", "#808080"))
-        note = f"{lv['type']} {lv['strength']:.2f}"
+        note = f"{lv['type']} {expiration} {lv['strength']:.2f}"
         w.writerow([bm_symbol, f"{lv['level'] + basis:.2f}", note, fg, bg, "left", "TRUE"])
     return buf.getvalue().encode()
 
@@ -501,7 +508,7 @@ def snapshot_once(args) -> int:
                                     ("MES", os.environ.get("BM_MES", "MESU6.CME@BMD"))):
                 r2.put(
                     f"bookmap/{feed}.csv",
-                    bookmap_csv(bm_symbol, levels, basis[feed]),
+                    bookmap_csv(bm_symbol, levels, basis[feed], expiration_tag),
                     "text/csv",
                 )
             print(f"  basis SPX->ES = {basis['ES']:+.2f}")
