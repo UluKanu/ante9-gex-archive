@@ -57,8 +57,8 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          BM_ES: ${{ vars.BM_ES || 'ESU6.CME@BMD' }}
-          BM_MES: ${{ vars.BM_MES || 'MESU6.CME@BMD' }}
+          BM_ES: ${{ vars.BM_ES || 'ESZ6.CME@BMD' }}
+          BM_MES: ${{ vars.BM_MES || 'MESZ6.CME@BMD' }}
         run: |
           if [ -n "$UNTIL" ]; then
             python fetch_gex.py --symbol SPX --bookmap --interval 300 --until "$UNTIL"
